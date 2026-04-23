@@ -6,19 +6,22 @@ const rateLimit = require("express-rate-limit");
 const axios = require("axios");
 const puppeteer = require("puppeteer");
 const pino = require("pino");
+const PQueue = require("p-queue").default;
 
 const logger = pino({ transport: { target: "pino-pretty" } });
+const queue = new PQueue({ concurrency: 2 });
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const app = express();
 app.use(helmet());
-app.use(cors({ origin: process.env.ALLOWED_ORIGIN || "http://localhost:3000" }));
+app.use(cors({ origin: process.env.ALLOWED_ORIGIN }));
 app.use(express.json());
 app.use("/check-website", rateLimit({ windowMs: 60_000, max: 10 }));
 
 const LANGUAGETOOL_URL = process.env.LANGUAGETOOL_URL || "https://api.languagetool.org/v2/check";
-const CHUNK_SIZE = parseInt(process.env.CHUNK_SIZE) || 4000;
-const PUPPETEER_TIMEOUT = parseInt(process.env.PUPPETEER_TIMEOUT) || 30000;
-const PORT = process.env.PORT || 5000;
+const CHUNK_SIZE = parseInt(process.env.CHUNK_SIZE);
+const PUPPETEER_TIMEOUT = parseInt(process.env.PUPPETEER_TIMEOUT);
+const PORT = process.env.PORT;
 
 const BLOCKED_HOSTS = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/;
 
@@ -75,6 +78,7 @@ async function checkGrammar(text) {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       timeout: 15000,
     });
+    await delay(500);
 
     for (const match of res.data.matches) {
       const context = match.context;
@@ -101,7 +105,7 @@ app.post("/check-website", async (req, res) => {
   }
 
   try {
-    const text = await scrapeText(url);
+    const text = await queue.add(() => scrapeText(url));
     if (!text || text.length < 10) {
       return res.status(422).json({ error: "Could not extract text from the page." });
     }
