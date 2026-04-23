@@ -1,22 +1,33 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 const axios = require("axios");
 const puppeteer = require("puppeteer");
+const pino = require("pino");
+
+const logger = pino({ transport: { target: "pino-pretty" } });
 
 const app = express();
-app.use(cors());
+app.use(helmet());
+app.use(cors({ origin: process.env.ALLOWED_ORIGIN || "http://localhost:3000" }));
 app.use(express.json());
+app.use("/check-website", rateLimit({ windowMs: 60_000, max: 10 }));
 
 const LANGUAGETOOL_URL = process.env.LANGUAGETOOL_URL || "https://api.languagetool.org/v2/check";
 const CHUNK_SIZE = parseInt(process.env.CHUNK_SIZE) || 4000;
 const PUPPETEER_TIMEOUT = parseInt(process.env.PUPPETEER_TIMEOUT) || 30000;
 const PORT = process.env.PORT || 5000;
 
+const BLOCKED_HOSTS = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/;
+
 function isValidUrl(string) {
   try {
     const url = new URL(string);
-    return url.protocol === "http:" || url.protocol === "https:";
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    if (BLOCKED_HOSTS.test(url.hostname)) return false;
+    return true;
   } catch {
     return false;
   }
@@ -104,9 +115,11 @@ app.post("/check-website", async (req, res) => {
     if (err.response?.status === 429) {
       return res.status(429).json({ error: "LanguageTool rate limit reached. Please wait and try again." });
     }
-    console.error(err.message);
-    res.status(500).json({ error: "Something went wrong. " + err.message });
+    logger.error(err);
+    res.status(500).json({ error: "Internal server error." });
   }
-}); 
+});
 
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+app.get("/health", (req, res) => res.json({ status: "ok" }));
+
+app.listen(PORT, () => logger.info(`Server running on http://localhost:${PORT}`));
