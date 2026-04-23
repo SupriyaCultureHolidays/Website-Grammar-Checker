@@ -7,6 +7,7 @@ const axios = require("axios");
 const puppeteer = require("puppeteer");
 const pino = require("pino");
 const PQueue = require("p-queue").default;
+const mongoose = require("mongoose");
 
 const logger = pino({ transport: { target: "pino-pretty" } });
 const queue = new PQueue({ concurrency: 2 });
@@ -22,6 +23,16 @@ const LANGUAGETOOL_URL = process.env.LANGUAGETOOL_URL || "https://api.languageto
 const CHUNK_SIZE = parseInt(process.env.CHUNK_SIZE);
 const PUPPETEER_TIMEOUT = parseInt(process.env.PUPPETEER_TIMEOUT);
 const PORT = process.env.PORT;
+const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/grammar-checker";
+
+mongoose.connect(MONGO_URI).then(() => logger.info("MongoDB connected")).catch((e) => logger.error(e, "MongoDB connection failed"));
+
+const ScanResult = mongoose.model("ScanResult", new mongoose.Schema({
+  url: { type: String, required: true },
+  issues: [{ wrong: String, suggestion: String, sentence: String }],
+  total: Number,
+  checkedAt: { type: Date, default: Date.now },
+}));
 
 const BLOCKED_HOSTS = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/;
 
@@ -111,6 +122,7 @@ app.post("/check-website", async (req, res) => {
     }
 
     const issues = await checkGrammar(text);
+    await ScanResult.create({ url, issues, total: issues.length });
     res.json({ issues, total: issues.length });
   } catch (err) {
     if (err.name === "TimeoutError" || err.message?.includes("timeout")) {
@@ -125,5 +137,21 @@ app.post("/check-website", async (req, res) => {
 });
 
 app.get("/health", (req, res) => res.json({ status: "ok" }));
+
+app.get("/scans", async (req, res) => {
+  const scans = await ScanResult.find({}, "url total checkedAt").sort({ checkedAt: -1 }).limit(50);
+  res.json(scans);
+});
+
+app.get("/scans/:id", async (req, res) => {
+  const scan = await ScanResult.findById(req.params.id);
+  if (!scan) return res.status(404).json({ error: "Not found" });
+  res.json(scan);
+});
+
+app.delete("/scans/:id", async (req, res) => {
+  await ScanResult.findByIdAndDelete(req.params.id);
+  res.json({ success: true });
+});
 
 app.listen(PORT, () => logger.info(`Server running on http://localhost:${PORT}`));
